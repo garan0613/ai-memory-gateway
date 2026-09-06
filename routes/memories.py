@@ -64,7 +64,7 @@ async def export_memories():
         return {
             "schema_version": 3,
             "total": len(memories),
-            "exported_at": str(__import__("datetime").datetime.now()),
+            "exported_at": str(datetime.now()),
             "memories": memories,
         }
     except db_memories.BrokenMergeReferencesError as e:

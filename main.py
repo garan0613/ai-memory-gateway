@@ -60,58 +60,21 @@ async def lifespan(app: FastAPI):
         try:
             db_cfg = await db_core.get_all_gateway_config()
             if db_cfg:
-                _RESTORE_SHARED = {
-                    "API_BASE_URL": str, "API_KEY": str, "DEFAULT_MODEL": str,
-                    "MEMORY_ENABLED": lambda v: shared._parse_bool(v),
-                    "MAX_MEMORIES_INJECT": int, "MAX_CONVERSATIONS_INJECT": int,
-                    "MEMORY_SEEN_TTL_HOURS": lambda v: max(0.0, float(v)),
-                    "CONVERSATION_SEEN_TTL_HOURS": lambda v: max(0.0, float(v)),
-                    "MEMORY_EXTRACT_INTERVAL": int,
-                    "CACHE_PARTITION_ENABLED": lambda v: shared._parse_bool(v),
-                    "CACHE_PARTITION_X": int, "CACHE_PARTITION_TRIGGER": str,
-                    "CACHE_PARTITION_WINDOW": int, "CACHE_SUMMARY_MODEL": str,
-                    "CACHE_TTL": str,
-                    "FORCE_STREAM": lambda v: shared._parse_bool(v),
-                    "REASONING_EFFORT": str,
-                }
-                _RESTORE_SHARED.update({
-                    "EMBEDDING_API_KEY": str, "EMBEDDING_BASE_URL": str,
-                    "EMBEDDING_MODEL": str, "EMBEDDING_DIM": int,
-                    "MIN_SCORE_THRESHOLD": float,
-                    "MEMORY_VECTOR_ENABLED": lambda v: shared._parse_bool(v),
-                    "CONVERSATION_RECALL_ENABLED": lambda v: shared._parse_bool(v),
-                    "CONVERSATION_MIN_SCORE_THRESHOLD": float,
-                    "CONVERSATION_HW_KEYWORD": float,
-                    "CONVERSATION_HW_SEMANTIC": float,
-                    "CONVERSATION_HW_RECENCY": float,
-                    "MEMORY_HW_KEYWORD": float, "MEMORY_HW_SEMANTIC": float,
-                    "MEMORY_HW_IMPORTANCE": float, "MEMORY_HW_RECENCY": float,
-                    "MEMORY_SEMANTIC_THRESHOLD": float,
-                })
                 # 显式空值也要恢复，否则重启时环境默认会覆盖面板上的清空操作。
-                _ALLOW_EMPTY = {"CACHE_SUMMARY_MODEL"}
                 restored = []
                 for key, val in db_cfg.items():
-                    if not val:
-                        if key in _ALLOW_EMPTY and key in _RESTORE_SHARED:
-                            setattr(shared, key, _RESTORE_SHARED[key](""))
-                            restored.append(key + "(显式空)")
-                        elif key == "MEMORY_MODEL":
+                    if key in shared.SETTINGS_TYPES:
+                        if not val and key not in shared.SETTINGS_ALLOW_EMPTY:
+                            continue
+                        setattr(shared, key, shared.SETTINGS_TYPES[key](val or ""))
+                        restored.append(key + ("(显式空)" if not val else ""))
+                    elif key == "MEMORY_MODEL":
+                        if not val:
                             os.environ["MEMORY_MODEL"] = ""
                             restored.append(key + "(显式空)")
-                        elif key == "MEMORY_API_KEY":
-                            setattr(shared, key, "")
-                            restored.append(key + "(显式空)")
-                        continue
-                    if key in _RESTORE_SHARED:
-                        setattr(shared, key, _RESTORE_SHARED[key](val))
-                        restored.append(key)
-                    elif key == "MEMORY_MODEL":
-                        os.environ["MEMORY_MODEL"] = str(val)
-                        restored.append(key)
-                    elif key == "MEMORY_API_KEY":
-                        setattr(shared, key, str(val))
-                        restored.append(key)
+                        else:
+                            os.environ["MEMORY_MODEL"] = str(val)
+                            restored.append(key)
                 if restored:
                     shared.sync_memory_extractor_config()
                     print(f"🔄 从数据库恢复 {len(restored)} 项面板配置: {', '.join(restored)}")

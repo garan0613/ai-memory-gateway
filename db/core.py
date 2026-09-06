@@ -118,14 +118,7 @@ async def init_tables():
 
         # 工具调用支持：加 metadata 字段（已有表自动迁移）
         await conn.execute("""
-            DO $$ BEGIN
-                IF NOT EXISTS (
-                    SELECT 1 FROM information_schema.columns
-                    WHERE table_name = 'conversations' AND column_name = 'metadata'
-                ) THEN
-                    ALTER TABLE conversations ADD COLUMN metadata TEXT;
-                END IF;
-            END $$;
+            ALTER TABLE conversations ADD COLUMN IF NOT EXISTS metadata TEXT;
         """)
 
         # content 允许 NULL（工具调用时 assistant 的 content 可能为空）
@@ -190,62 +183,27 @@ async def init_tables():
         # ---- 三层记忆架构字段（layer / title / is_active / merged_from / event_date）----
         # layer: 1=原始碎片, 2=事件记忆, 3=核心记忆
         await conn.execute("""
-            DO $$ BEGIN
-                IF NOT EXISTS (
-                    SELECT 1 FROM information_schema.columns
-                    WHERE table_name = 'memories' AND column_name = 'layer'
-                ) THEN
-                    ALTER TABLE memories ADD COLUMN layer INTEGER DEFAULT 1;
-                END IF;
-            END $$;
+            ALTER TABLE memories ADD COLUMN IF NOT EXISTS layer INTEGER DEFAULT 1;
         """)
 
         # title: 记忆标题（语义锚点，用于搜索加权）
         await conn.execute("""
-            DO $$ BEGIN
-                IF NOT EXISTS (
-                    SELECT 1 FROM information_schema.columns
-                    WHERE table_name = 'memories' AND column_name = 'title'
-                ) THEN
-                    ALTER TABLE memories ADD COLUMN title TEXT DEFAULT NULL;
-                END IF;
-            END $$;
+            ALTER TABLE memories ADD COLUMN IF NOT EXISTS title TEXT DEFAULT NULL;
         """)
 
         # is_active: 是否参与搜索（碎片合并后变为 false）
         await conn.execute("""
-            DO $$ BEGIN
-                IF NOT EXISTS (
-                    SELECT 1 FROM information_schema.columns
-                    WHERE table_name = 'memories' AND column_name = 'is_active'
-                ) THEN
-                    ALTER TABLE memories ADD COLUMN is_active BOOLEAN DEFAULT TRUE;
-                END IF;
-            END $$;
+            ALTER TABLE memories ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE;
         """)
 
         # merged_from: 合并来源的碎片ID列表
         await conn.execute("""
-            DO $$ BEGIN
-                IF NOT EXISTS (
-                    SELECT 1 FROM information_schema.columns
-                    WHERE table_name = 'memories' AND column_name = 'merged_from'
-                ) THEN
-                    ALTER TABLE memories ADD COLUMN merged_from INTEGER[] DEFAULT NULL;
-                END IF;
-            END $$;
+            ALTER TABLE memories ADD COLUMN IF NOT EXISTS merged_from INTEGER[] DEFAULT NULL;
         """)
 
         # event_date: 事件日期（用于按天整理）
         await conn.execute("""
-            DO $$ BEGIN
-                IF NOT EXISTS (
-                    SELECT 1 FROM information_schema.columns
-                    WHERE table_name = 'memories' AND column_name = 'event_date'
-                ) THEN
-                    ALTER TABLE memories ADD COLUMN event_date DATE DEFAULT NULL;
-                END IF;
-            END $$;
+            ALTER TABLE memories ADD COLUMN IF NOT EXISTS event_date DATE DEFAULT NULL;
         """)
 
         # external_id: 调用方提供的稳定幂等键
@@ -302,26 +260,14 @@ async def init_tables():
 
             # 对话表向量列
             await conn.execute(f"""
-                DO $$ BEGIN
-                    IF NOT EXISTS (
-                        SELECT 1 FROM information_schema.columns
-                        WHERE table_name = 'conversations' AND column_name = 'embedding'
-                    ) THEN
-                        ALTER TABLE conversations ADD COLUMN embedding vector({shared.EMBEDDING_DIM});
-                    END IF;
-                END $$;
+                ALTER TABLE conversations
+                ADD COLUMN IF NOT EXISTS embedding vector({shared.EMBEDDING_DIM});
             """)
 
             # 记忆表向量列
             await conn.execute(f"""
-                DO $$ BEGIN
-                    IF NOT EXISTS (
-                        SELECT 1 FROM information_schema.columns
-                        WHERE table_name = 'memories' AND column_name = 'embedding'
-                    ) THEN
-                        ALTER TABLE memories ADD COLUMN embedding vector({shared.EMBEDDING_DIM});
-                    END IF;
-                END $$;
+                ALTER TABLE memories
+                ADD COLUMN IF NOT EXISTS embedding vector({shared.EMBEDDING_DIM});
             """)
             try:
                 await conn.execute("""
@@ -337,24 +283,10 @@ async def init_tables():
 
             # 回退：用TEXT列存JSON格式的向量
             await conn.execute("""
-                DO $$ BEGIN
-                    IF NOT EXISTS (
-                        SELECT 1 FROM information_schema.columns
-                        WHERE table_name = 'conversations' AND column_name = 'embedding_json'
-                    ) THEN
-                        ALTER TABLE conversations ADD COLUMN embedding_json TEXT;
-                    END IF;
-                END $$;
+                ALTER TABLE conversations ADD COLUMN IF NOT EXISTS embedding_json TEXT;
             """)
             await conn.execute("""
-                DO $$ BEGIN
-                    IF NOT EXISTS (
-                        SELECT 1 FROM information_schema.columns
-                        WHERE table_name = 'memories' AND column_name = 'embedding_json'
-                    ) THEN
-                        ALTER TABLE memories ADD COLUMN embedding_json TEXT;
-                    END IF;
-                END $$;
+                ALTER TABLE memories ADD COLUMN IF NOT EXISTS embedding_json TEXT;
             """)
 
     print("✅ 数据库表结构已就绪")

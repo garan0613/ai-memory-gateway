@@ -343,6 +343,33 @@ async def save_session_cache_state(session_id: str, summary_parts: list, a_start
         """, session_id, summary_json, a_start_round)
 
 
+async def _merge_seen_ledger(session_id: str, column: str, fresh_seen: str, ttl_hours: float):
+    pool = await db_core.get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            f"""INSERT INTO session_cache_state (
+                   session_id, {column}, updated_at
+               ) VALUES ($1, $2::jsonb, NOW())
+               ON CONFLICT (session_id) DO UPDATE
+               SET {column} = (
+                       SELECT COALESCE(
+                           jsonb_object_agg(active.key, active.value),
+                            '{{}}'::jsonb
+                       )
+                       FROM jsonb_each(
+                           COALESCE(
+                               session_cache_state.{column},
+                               '{{}}'::jsonb
+                           )
+                       ) AS active(key, value)
+                        WHERE (active.value #>> '{{}}')::timestamptz >=
+                             NOW() - ($3::double precision * INTERVAL '1 hour')
+                   ) || EXCLUDED.{column},
+                   updated_at = NOW()""",
+            session_id, fresh_seen, ttl_hours,
+        )
+
+
 async def mark_fragments_seen(session_id: str, fragment_ids: list, ttl_hours: float = 6):
     """成功请求结束后原子合并已注入 fragment_id，不覆盖分区摘要状态。"""
     ids = sorted({str(value) for value in fragment_ids if value})
@@ -354,30 +381,12 @@ async def mark_fragments_seen(session_id: str, fragment_ids: list, ttl_hours: fl
         {fragment_id: seen_at for fragment_id in ids},
         ensure_ascii=False,
     )
-    pool = await db_core.get_pool()
-    async with pool.acquire() as conn:
-        await conn.execute(
-            """INSERT INTO session_cache_state (
-                   session_id, seen_fragment_times, updated_at
-               ) VALUES ($1, $2::jsonb, NOW())
-               ON CONFLICT (session_id) DO UPDATE
-               SET seen_fragment_times = (
-                       SELECT COALESCE(
-                           jsonb_object_agg(active.key, active.value),
-                           '{}'::jsonb
-                       )
-                       FROM jsonb_each(
-                           COALESCE(
-                               session_cache_state.seen_fragment_times,
-                               '{}'::jsonb
-                           )
-                       ) AS active(key, value)
-                       WHERE (active.value #>> '{}')::timestamptz >=
-                             NOW() - ($3::double precision * INTERVAL '1 hour')
-                   ) || EXCLUDED.seen_fragment_times,
-                   updated_at = NOW()""",
-            session_id, fresh_seen, ttl_hours,
-        )
+    await _merge_seen_ledger(
+        session_id,
+        "seen_fragment_times",
+        fresh_seen,
+        ttl_hours,
+    )
     return len(ids)
 
 
@@ -396,30 +405,12 @@ async def mark_memories_seen(session_id: str, memory_ids: list, ttl_hours: float
         {str(memory_id): seen_at for memory_id in ids},
         ensure_ascii=False,
     )
-    pool = await db_core.get_pool()
-    async with pool.acquire() as conn:
-        await conn.execute(
-            """INSERT INTO session_cache_state (
-                   session_id, seen_memory_times, updated_at
-               ) VALUES ($1, $2::jsonb, NOW())
-               ON CONFLICT (session_id) DO UPDATE
-               SET seen_memory_times = (
-                       SELECT COALESCE(
-                           jsonb_object_agg(active.key, active.value),
-                           '{}'::jsonb
-                       )
-                       FROM jsonb_each(
-                           COALESCE(
-                               session_cache_state.seen_memory_times,
-                               '{}'::jsonb
-                           )
-                       ) AS active(key, value)
-                       WHERE (active.value #>> '{}')::timestamptz >=
-                             NOW() - ($3::double precision * INTERVAL '1 hour')
-                   ) || EXCLUDED.seen_memory_times,
-                   updated_at = NOW()""",
-            session_id, fresh_seen, ttl_hours,
-        )
+    await _merge_seen_ledger(
+        session_id,
+        "seen_memory_times",
+        fresh_seen,
+        ttl_hours,
+    )
     return len(ids)
 
 

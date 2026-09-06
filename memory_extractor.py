@@ -305,6 +305,10 @@ SCORING_PROMPT = """你是记忆重要性评分专家。请对以下记忆条目
 只返回 JSON，不要其他文字。"""
 
 
+def _default_scores(texts: List[str]) -> List[Dict]:
+    return [{"content": text, "importance": 5} for text in texts]
+
+
 async def score_memories(texts: List[str]) -> List[Dict]:
     """对纯文本记忆条目批量评分"""
     if not texts:
@@ -333,7 +337,7 @@ async def score_memories(texts: List[str]) -> List[Dict]:
             if response.status_code != 200:
                 print(f"⚠️  记忆评分请求失败: {response.status_code}, model={MEMORY_MODEL}: {response.text[:500]}")
                 # 失败时返回默认分数
-                return [{"content": t, "importance": 5} for t in texts]
+                return _default_scores(texts)
 
             data = response.json()
             text = data.get("choices", [{}])[0].get("message", {}).get("content", "")
@@ -356,12 +360,12 @@ async def score_memories(texts: List[str]) -> List[Dict]:
                     try:
                         memories = json.loads(match.group())
                     except json.JSONDecodeError:
-                        return [{"content": t, "importance": 5} for t in texts]
+                        return _default_scores(texts)
                 else:
-                    return [{"content": t, "importance": 5} for t in texts]
+                    return _default_scores(texts)
 
             if not isinstance(memories, list):
-                return [{"content": t, "importance": 5} for t in texts]
+                return _default_scores(texts)
 
             valid = []
             for mem in memories:
@@ -376,4 +380,4 @@ async def score_memories(texts: List[str]) -> List[Dict]:
 
     except Exception as e:
         print(f"⚠️  记忆评分出错: {e}")
-        return [{"content": t, "importance": 5} for t in texts]
+        return _default_scores(texts)

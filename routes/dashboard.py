@@ -15,6 +15,7 @@ from db import search as db_search
 
 router = APIRouter()
 settings_router = APIRouter()
+_MASKED_KEYS = {"API_KEY", "EMBEDDING_API_KEY", "MEMORY_API_KEY"}
 
 @router.get("/dashboard/login", response_class=HTMLResponse)
 async def dashboard_login_page(request: Request):
@@ -219,86 +220,14 @@ async def get_settings():
     try:
         db = await db_core.get_all_gateway_config()
 
-        # --- 基础连接 ---
-        api_key_raw = db.get("API_KEY") or shared.API_KEY
-        embedding_key_raw = db.get("EMBEDDING_API_KEY") or shared.EMBEDDING_API_KEY
-
-        memory_key_raw = db.get("MEMORY_API_KEY") or shared.MEMORY_API_KEY
-
         settings = {
-            # 基础连接
-            "API_BASE_URL":     db.get("API_BASE_URL") or str(shared.API_BASE_URL),
-            "API_KEY":          _mask_key(api_key_raw),
-            "DEFAULT_MODEL":    db.get("DEFAULT_MODEL") or str(shared.DEFAULT_MODEL),
-
-            # 记忆系统
-            "MEMORY_ENABLED":          shared._parse_bool(db.get("MEMORY_ENABLED"), shared.MEMORY_ENABLED),
-            "MEMORY_API_KEY":          _mask_key(memory_key_raw),
-            "MEMORY_MODEL":            db.get("MEMORY_MODEL") or os.environ.get("MEMORY_MODEL", ""),
-            "MAX_MEMORIES_INJECT":     int(db.get("MAX_MEMORIES_INJECT") or shared.MAX_MEMORIES_INJECT),
-            "MEMORY_SEEN_TTL_HOURS": float(
-                db.get("MEMORY_SEEN_TTL_HOURS")
-                or shared.MEMORY_SEEN_TTL_HOURS
-            ),
-            "MAX_CONVERSATIONS_INJECT": int(
-                db.get("MAX_CONVERSATIONS_INJECT") or shared.MAX_CONVERSATIONS_INJECT
-            ),
-            "CONVERSATION_SEEN_TTL_HOURS": float(
-                db.get("CONVERSATION_SEEN_TTL_HOURS")
-                or shared.CONVERSATION_SEEN_TTL_HOURS
-            ),
-            "MIN_SCORE_THRESHOLD":     float(db.get("MIN_SCORE_THRESHOLD") or shared.MIN_SCORE_THRESHOLD),
-            "MEMORY_EXTRACT_INTERVAL": int(db.get("MEMORY_EXTRACT_INTERVAL") or shared.MEMORY_EXTRACT_INTERVAL),
-
-            # 缓存分区
-            "CACHE_PARTITION_ENABLED": shared._parse_bool(db.get("CACHE_PARTITION_ENABLED"), shared.CACHE_PARTITION_ENABLED),
-            "CACHE_PARTITION_X":       int(db.get("CACHE_PARTITION_X") or shared.CACHE_PARTITION_X),
-            "CACHE_PARTITION_TRIGGER": db.get("CACHE_PARTITION_TRIGGER") or shared.CACHE_PARTITION_TRIGGER,
-            "CACHE_PARTITION_WINDOW":  int(db.get("CACHE_PARTITION_WINDOW") or shared.CACHE_PARTITION_WINDOW),
-            "CACHE_SUMMARY_MODEL":     db.get("CACHE_SUMMARY_MODEL") or str(shared.CACHE_SUMMARY_MODEL),
-            "CACHE_TTL":               db.get("CACHE_TTL") or str(shared.CACHE_TTL),
-
-            # 向量搜索（开源版用 EMBEDDING_API_KEY + EMBEDDING_BASE_URL）
-            "MEMORY_VECTOR_ENABLED":   shared._parse_bool(db.get("MEMORY_VECTOR_ENABLED"), shared.MEMORY_VECTOR_ENABLED),
-            "CONVERSATION_RECALL_ENABLED": shared._parse_bool(
-                db.get("CONVERSATION_RECALL_ENABLED"),
-                shared.CONVERSATION_RECALL_ENABLED,
-            ),
-            "CONVERSATION_MIN_SCORE_THRESHOLD": float(
-                db.get("CONVERSATION_MIN_SCORE_THRESHOLD")
-                or shared.CONVERSATION_MIN_SCORE_THRESHOLD
-            ),
-            "CONVERSATION_HW_KEYWORD": float(
-                db.get("CONVERSATION_HW_KEYWORD")
-                or shared.CONVERSATION_HW_KEYWORD
-            ),
-            "CONVERSATION_HW_SEMANTIC": float(
-                db.get("CONVERSATION_HW_SEMANTIC")
-                or shared.CONVERSATION_HW_SEMANTIC
-            ),
-            "CONVERSATION_HW_RECENCY": float(
-                db.get("CONVERSATION_HW_RECENCY")
-                or shared.CONVERSATION_HW_RECENCY
-            ),
-            "EMBEDDING_API_KEY":       _mask_key(embedding_key_raw),
-            "EMBEDDING_BASE_URL":      db.get("EMBEDDING_BASE_URL") or str(shared.EMBEDDING_BASE_URL),
-            "EMBEDDING_MODEL":         db.get("EMBEDDING_MODEL") or str(shared.EMBEDDING_MODEL),
-            "EMBEDDING_DIM":           int(db.get("EMBEDDING_DIM") or shared.EMBEDDING_DIM),
-
-            # 记忆搜索权重
-            "MEMORY_HW_KEYWORD":        float(db.get("MEMORY_HW_KEYWORD") or shared.MEMORY_HW_KEYWORD),
-            "MEMORY_HW_SEMANTIC":       float(db.get("MEMORY_HW_SEMANTIC") or shared.MEMORY_HW_SEMANTIC),
-            "MEMORY_HW_IMPORTANCE":     float(db.get("MEMORY_HW_IMPORTANCE") or shared.MEMORY_HW_IMPORTANCE),
-            "MEMORY_HW_RECENCY":        float(db.get("MEMORY_HW_RECENCY") or shared.MEMORY_HW_RECENCY),
-            "MEMORY_SEMANTIC_THRESHOLD": float(db.get("MEMORY_SEMANTIC_THRESHOLD") or shared.MEMORY_SEMANTIC_THRESHOLD),
-
-            # 其他
-            "FORCE_STREAM":       shared._parse_bool(db.get("FORCE_STREAM"), shared.FORCE_STREAM),
-            "REASONING_EFFORT":   db.get("REASONING_EFFORT") or str(shared.REASONING_EFFORT),
-
-            # System Prompt
-            "systemPrompt": db.get("systemPrompt") or shared._DEFAULT_SYSTEM_PROMPT or "",
+            key: parser(db[key]) if db.get(key) else getattr(shared, key)
+            for key, parser in shared.SETTINGS_TYPES.items()
         }
+        for key in _MASKED_KEYS:
+            settings[key] = _mask_key(settings[key])
+        settings["MEMORY_MODEL"] = db.get("MEMORY_MODEL") or os.environ.get("MEMORY_MODEL", "")
+        settings["systemPrompt"] = db.get("systemPrompt") or shared._DEFAULT_SYSTEM_PROMPT or ""
 
         return {"status": "ok", "settings": settings}
     except Exception:
@@ -316,52 +245,8 @@ async def save_settings(request: Request):
         updated = []
         skipped = []
 
-        # shared.py 运行时变量映射（key → 类型转换函数）
-        _SHARED_VARS = {
-            "API_BASE_URL":          str,
-            "API_KEY":               str,
-            "DEFAULT_MODEL":         str,
-            "MEMORY_API_KEY":        str,
-            "MEMORY_ENABLED":        lambda v: shared._parse_bool(v),
-            "MAX_MEMORIES_INJECT":   int,
-            "MEMORY_SEEN_TTL_HOURS": lambda v: max(0.0, float(v)),
-            "MAX_CONVERSATIONS_INJECT": int,
-            "CONVERSATION_SEEN_TTL_HOURS": lambda v: max(0.0, float(v)),
-            "MEMORY_EXTRACT_INTERVAL": int,
-            "CACHE_PARTITION_ENABLED": lambda v: shared._parse_bool(v),
-            "CACHE_PARTITION_X":     int,
-            "CACHE_PARTITION_TRIGGER": str,
-            "CACHE_PARTITION_WINDOW": int,
-            "CACHE_SUMMARY_MODEL":   str,
-            "CACHE_TTL":             str,
-            "FORCE_STREAM":          lambda v: shared._parse_bool(v),
-            "REASONING_EFFORT":      str,
-        }
-
-        _SHARED_VARS.update({
-            "EMBEDDING_API_KEY":       str,
-            "EMBEDDING_BASE_URL":      str,
-            "EMBEDDING_MODEL":         str,
-            "EMBEDDING_DIM":           int,
-            "MIN_SCORE_THRESHOLD":     float,
-            "MEMORY_VECTOR_ENABLED":   lambda v: shared._parse_bool(v),
-            "CONVERSATION_RECALL_ENABLED": lambda v: shared._parse_bool(v),
-            "CONVERSATION_MIN_SCORE_THRESHOLD": float,
-            "CONVERSATION_HW_KEYWORD": float,
-            "CONVERSATION_HW_SEMANTIC": float,
-            "CONVERSATION_HW_RECENCY": float,
-            "MEMORY_HW_KEYWORD":       float,
-            "MEMORY_HW_SEMANTIC":      float,
-            "MEMORY_HW_IMPORTANCE":    float,
-            "MEMORY_HW_RECENCY":       float,
-            "MEMORY_SEMANTIC_THRESHOLD": float,
-        })
-
         # 只存 os.environ 的变量
         _ENV_ONLY = {"MEMORY_MODEL": str}
-
-        # 打码字段
-        _MASKED_KEYS = {"API_KEY", "EMBEDDING_API_KEY", "MEMORY_API_KEY"}
 
         for key, value in data.items():
             # --- 打码字段特殊处理 ---
@@ -372,11 +257,8 @@ async def save_settings(request: Request):
                     continue
                 if not str_val:
                     await db_core.set_gateway_config(key, "")
-                    if key in _SHARED_VARS:
+                    if key in shared.SETTINGS_TYPES:
                         setattr(shared, key, "")
-                    if key == "MEMORY_API_KEY":
-                        import memory_extractor as _me_mod
-                        _me_mod.MEMORY_API_KEY = ""
                     os.environ[key] = ""
                     updated.append(key)
                     continue
@@ -393,13 +275,10 @@ async def save_settings(request: Request):
             # --- 常规字段 ---
             await db_core.set_gateway_config(key, str(value))
 
-            if key in _SHARED_VARS:
-                typed_value = _SHARED_VARS[key](value)
+            if key in shared.SETTINGS_TYPES:
+                typed_value = shared.SETTINGS_TYPES[key](value)
                 setattr(shared, key, typed_value)
                 os.environ[key] = str(value)
-                if key == "MEMORY_API_KEY":
-                    import memory_extractor as _me_mod
-                    _me_mod.MEMORY_API_KEY = str(value)
                 updated.append(key)
                 if key in _MASKED_KEYS:
                     print(f"[settings] {key} 已更新")

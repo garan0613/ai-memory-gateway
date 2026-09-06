@@ -88,6 +88,10 @@ def get_active_session_id() -> str:
     return PARTITION_SESSION_ID
 
 
+def memory_injection_enabled() -> bool:
+    return MEMORY_ENABLED and MAX_MEMORIES_INJECT > 0
+
+
 def conversation_persistence_enabled() -> bool:
     """记忆、分区或对话召回任一开启时都需要保留历史。"""
     return DATABASE_ENABLED and (
@@ -141,6 +145,45 @@ REASONING_EFFORT = os.getenv("REASONING_EFFORT", "")
 # 记忆模型专用 API Key（不设则回退到主 API_KEY）
 # 适用于中转站按模型分组、不同模型需要不同 Key 的场景
 MEMORY_API_KEY = os.getenv("MEMORY_API_KEY", "")
+
+SETTINGS_TYPES = {
+    "API_BASE_URL": str,
+    "API_KEY": str,
+    "DEFAULT_MODEL": str,
+    "MEMORY_API_KEY": str,
+    "MEMORY_ENABLED": lambda value: _parse_bool(value),
+    "MAX_MEMORIES_INJECT": int,
+    "MEMORY_SEEN_TTL_HOURS": lambda value: max(0.0, float(value)),
+    "MAX_CONVERSATIONS_INJECT": int,
+    "CONVERSATION_SEEN_TTL_HOURS": lambda value: max(0.0, float(value)),
+    "MEMORY_EXTRACT_INTERVAL": int,
+    "CACHE_PARTITION_ENABLED": lambda value: _parse_bool(value),
+    "CACHE_PARTITION_X": int,
+    "CACHE_PARTITION_TRIGGER": str,
+    "CACHE_PARTITION_WINDOW": int,
+    "CACHE_SUMMARY_MODEL": str,
+    "CACHE_TTL": str,
+    "FORCE_STREAM": lambda value: _parse_bool(value),
+    "REASONING_EFFORT": str,
+    "EMBEDDING_API_KEY": str,
+    "EMBEDDING_BASE_URL": str,
+    "EMBEDDING_MODEL": str,
+    "EMBEDDING_DIM": int,
+    "MIN_SCORE_THRESHOLD": float,
+    "MEMORY_VECTOR_ENABLED": lambda value: _parse_bool(value),
+    "CONVERSATION_RECALL_ENABLED": lambda value: _parse_bool(value),
+    "CONVERSATION_MIN_SCORE_THRESHOLD": float,
+    "CONVERSATION_HW_KEYWORD": float,
+    "CONVERSATION_HW_SEMANTIC": float,
+    "CONVERSATION_HW_RECENCY": float,
+    "MEMORY_HW_KEYWORD": float,
+    "MEMORY_HW_SEMANTIC": float,
+    "MEMORY_HW_IMPORTANCE": float,
+    "MEMORY_HW_RECENCY": float,
+    "MEMORY_SEMANTIC_THRESHOLD": float,
+}
+SETTINGS_ALLOW_EMPTY = {"CACHE_SUMMARY_MODEL", "MEMORY_API_KEY"}
+
 
 def get_memory_api_key() -> str:
     return MEMORY_API_KEY or API_KEY

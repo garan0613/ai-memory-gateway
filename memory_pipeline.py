@@ -15,16 +15,27 @@ from memory_extractor import extract_memories
 # 记忆注入
 # ============================================================
 
+def _memory_date_prefix(mem: dict) -> str:
+    if mem.get("event_date"):
+        return f"[{str(mem['event_date'])[:10]}] "
+    if mem.get("created_at"):
+        try:
+            utc_str = str(mem["created_at"])[:19]
+            utc_dt = datetime.strptime(utc_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+            local_dt = utc_dt + timedelta(hours=shared.TIMEZONE_HOURS)
+            return f"[{local_dt.strftime('%Y-%m-%d')}] "
+        except:
+            return f"[{str(mem['created_at'])[:10]}] "
+    return ""
+
+
 async def build_system_prompt_with_memories(user_message: str, base_prompt: str) -> str:
     """
     构建带记忆的 system prompt
     1. 用用户消息搜索相关记忆
     2. 格式化成文本拼接到人设后面
     """
-    if not shared.MEMORY_ENABLED:
-        return base_prompt
-
-    if shared.MAX_MEMORIES_INJECT <= 0:
+    if not shared.memory_injection_enabled():
         return base_prompt
 
     try:
@@ -38,18 +49,7 @@ async def build_system_prompt_with_memories(user_message: str, base_prompt: str)
         # event_date 本身就是本地日期，不做时区换算
         memory_lines = []
         for mem in memories:
-            date_str = ""
-            if mem.get("event_date"):
-                date_str = f"[{str(mem['event_date'])[:10]}] "
-            elif mem.get("created_at"):
-                try:
-                    utc_str = str(mem['created_at'])[:19]
-                    utc_dt = datetime.strptime(utc_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
-                    local_dt = utc_dt + timedelta(hours=shared.TIMEZONE_HOURS)
-                    date_str = f"[{local_dt.strftime('%Y-%m-%d')}] "
-                except:
-                    date_str = f"[{str(mem['created_at'])[:10]}] "
-            memory_lines.append(f"- {date_str}{mem['content']}")
+            memory_lines.append(f"- {_memory_date_prefix(mem)}{mem['content']}")
         memory_text = "\n".join(memory_lines)
 
         enhanced_prompt = f"""{base_prompt}
@@ -85,11 +85,7 @@ async def build_memory_text(
     injected_ids: list = None,
 ) -> str:
     """搜索记忆并格式化为注入文本（分区缓存模式用）。"""
-    if (
-        not shared.DATABASE_ENABLED
-        or not shared.MEMORY_ENABLED
-        or shared.MAX_MEMORIES_INJECT <= 0
-    ):
+    if not shared.memory_injection_enabled():
         return ""
     try:
         excluded_ids = []
@@ -98,35 +94,17 @@ async def build_memory_text(
                 session_id,
                 shared.MEMORY_SEEN_TTL_HOURS,
             )
-        if excluded_ids:
-            memories = await db_memories.search_memories(
-                user_message,
-                limit=shared.MAX_MEMORIES_INJECT,
-                exclude_ids=excluded_ids,
-            )
-        else:
-            memories = await db_memories.search_memories(
-                user_message,
-                limit=shared.MAX_MEMORIES_INJECT,
-            )
+        memories = await db_memories.search_memories(
+            user_message,
+            limit=shared.MAX_MEMORIES_INJECT,
+            exclude_ids=excluded_ids,
+        )
         if not memories:
             return ""
 
         memory_lines = []
         for mem in memories:
-            date_str = ""
-            if mem.get("event_date"):
-                # 事件日期优先，本身是本地日期不做时区换算
-                date_str = f"[{str(mem['event_date'])[:10]}] "
-            elif mem.get("created_at"):
-                try:
-                    utc_str = str(mem['created_at'])[:19]
-                    utc_dt = datetime.strptime(utc_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
-                    local_dt = utc_dt + timedelta(hours=shared.TIMEZONE_HOURS)
-                    date_str = f"[{local_dt.strftime('%Y-%m-%d')}] "
-                except:
-                    date_str = f"[{str(mem['created_at'])[:10]}] "
-            memory_lines.append(f"- {date_str}{mem['content']}")
+            memory_lines.append(f"- {_memory_date_prefix(mem)}{mem['content']}")
 
         if injected_ids is not None:
             injected_ids.extend(
@@ -285,6 +263,15 @@ async def process_memories_background(
         if tool_messages:
             print(f"💾 tool详情: {[{'role': m.get('role'), 'tool_call_id': m.get('tool_call_id', '?')} for m in tool_messages]}")
 
+        assistant_meta = None
+        if not skip_conversation_log:
+            ast_meta_dict = {}
+            if assistant_tool_calls:
+                ast_meta_dict["tool_calls"] = assistant_tool_calls
+            if assistant_reasoning:
+                ast_meta_dict["reasoning_content"] = assistant_reasoning
+            assistant_meta = json.dumps(ast_meta_dict) if ast_meta_dict else None
+
         # 1. 存储对话记录（除非明确跳过）
         if skip_conversation_log:
             print(f"⏭️  跳过对话存储（辅助请求）")
@@ -300,23 +287,10 @@ async def process_memories_background(
                 await db_conversations.save_message(session_id, "tool", tm.get("content", ""), model, metadata=meta)
 
             if assistant_msg or assistant_tool_calls:
-                ast_meta_dict = {}
-                if assistant_tool_calls:
-                    ast_meta_dict["tool_calls"] = assistant_tool_calls
-                if assistant_reasoning:
-                    ast_meta_dict["reasoning_content"] = assistant_reasoning
-                ast_meta = json.dumps(ast_meta_dict) if ast_meta_dict else None
-                await db_conversations.save_message(session_id, "assistant", assistant_msg or "", model, metadata=ast_meta)
+                await db_conversations.save_message(session_id, "assistant", assistant_msg or "", model, metadata=assistant_meta)
                 print(f"🔧 存储: {len(tool_messages)}条tool + 1条assistant" + (" (含tool_calls)" if assistant_tool_calls else "") + (" (含reasoning)" if assistant_reasoning else ""))
         else:
             # 普通对话或首次工具调用
-            ast_meta_dict = {}
-            if assistant_tool_calls:
-                ast_meta_dict["tool_calls"] = assistant_tool_calls
-            if assistant_reasoning:
-                ast_meta_dict["reasoning_content"] = assistant_reasoning
-            assistant_meta = json.dumps(ast_meta_dict) if ast_meta_dict else None
-
             if assistant_tool_calls:
                 # 首次工具调用：assistant回复包含tool_calls，存user + assistant(tool_calls)
                 await db_conversations.save_message(session_id, "user", user_msg, model)

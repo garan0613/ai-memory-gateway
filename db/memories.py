@@ -258,8 +258,6 @@ async def search_memories_hybrid(
 
     权重：MEMORY_HW_KEYWORD + MEMORY_HW_SEMANTIC + MEMORY_HW_IMPORTANCE + MEMORY_HW_RECENCY
     """
-    from datetime import datetime, timezone
-
     excluded_ids = _normalize_excluded_ids(exclude_ids)
     keywords = db_search.extract_search_keywords(query)
     query_embedding = await db_search.get_query_embedding(query) if shared.EMBEDDING_API_KEY else []
@@ -319,39 +317,23 @@ async def search_memories_hybrid(
         if query_embedding:
             if db_core.HAS_PGVECTOR:
                 vec_str = '[' + ','.join(str(f) for f in query_embedding) + ']'
-                if excluded_ids:
-                    sem_rows = await conn.fetch("""
-                        SELECT id, content, importance, created_at, event_date,
-                               1 - (embedding <=> $1::vector) as similarity
-                        FROM memories
-                        WHERE embedding IS NOT NULL AND is_active = TRUE
-                          AND NOT (id = ANY($2::int[]))
-                        ORDER BY embedding <=> $1::vector
-                        LIMIT $3
-                    """, vec_str, excluded_ids, limit * 3)
-                else:
-                    sem_rows = await conn.fetch("""
-                        SELECT id, content, importance, created_at, event_date,
-                               1 - (embedding <=> $1::vector) as similarity
-                        FROM memories
-                        WHERE embedding IS NOT NULL AND is_active = TRUE
-                        ORDER BY embedding <=> $1::vector
-                        LIMIT $2
-                    """, vec_str, limit * 3)
+                sem_rows = await conn.fetch("""
+                    SELECT id, content, importance, created_at, event_date,
+                           1 - (embedding <=> $1::vector) as similarity
+                    FROM memories
+                    WHERE embedding IS NOT NULL AND is_active = TRUE
+                      AND NOT (id = ANY($2::int[]))
+                    ORDER BY embedding <=> $1::vector
+                    LIMIT $3
+                """, vec_str, excluded_ids, limit * 3)
             else:
                 # Python端计算cosine
-                if excluded_ids:
-                    all_mem = await conn.fetch("""
-                        SELECT id, content, importance, created_at, event_date, embedding_json
-                        FROM memories
-                        WHERE embedding_json IS NOT NULL AND is_active = TRUE
-                          AND NOT (id = ANY($1::int[]))
-                    """, excluded_ids)
-                else:
-                    all_mem = await conn.fetch("""
-                        SELECT id, content, importance, created_at, event_date, embedding_json
-                        FROM memories WHERE embedding_json IS NOT NULL AND is_active = TRUE
-                    """)
+                all_mem = await conn.fetch("""
+                    SELECT id, content, importance, created_at, event_date, embedding_json
+                    FROM memories
+                    WHERE embedding_json IS NOT NULL AND is_active = TRUE
+                      AND NOT (id = ANY($1::int[]))
+                """, excluded_ids)
 
                 scored = []
                 for row in all_mem:
@@ -399,7 +381,7 @@ async def search_memories_hybrid(
         kw_norm = db_search._min_max_normalize({mid: v['kw_score'] for mid, v in candidates.items()})
         sem_norm = db_search._min_max_normalize({mid: v['similarity'] for mid, v in candidates.items()})
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(dt_timezone.utc)
         final = []
         for mid, info in candidates.items():
             kw = kw_norm.get(mid, 0.0)
@@ -608,16 +590,12 @@ async def get_extraction_candidates(
 
 async def get_pending_memory_embedding_count():
     """查询还没有embedding的记忆数量"""
+    embedding_column = "embedding" if db_core.HAS_PGVECTOR else "embedding_json"
     pool = await db_core.get_pool()
     async with pool.acquire() as conn:
-        if db_core.HAS_PGVECTOR:
-            return await conn.fetchval(
-                "SELECT COUNT(*) FROM memories WHERE embedding IS NULL AND content IS NOT NULL"
-            )
-        else:
-            return await conn.fetchval(
-                "SELECT COUNT(*) FROM memories WHERE embedding_json IS NULL AND content IS NOT NULL"
-            )
+        return await conn.fetchval(
+            f"SELECT COUNT(*) FROM memories WHERE {embedding_column} IS NULL AND content IS NOT NULL"
+        )
 
 
 async def backfill_memory_embeddings(batch_size: int = 20):
@@ -626,24 +604,17 @@ async def backfill_memory_embeddings(batch_size: int = 20):
         print("⚠️ EMBEDDING_API_KEY 未设置，无法补算embedding")
         return 0
 
+    embedding_column = "embedding" if db_core.HAS_PGVECTOR else "embedding_json"
     pool = await db_core.get_pool()
     total_updated = 0
 
     async with pool.acquire() as conn:
-        if db_core.HAS_PGVECTOR:
-            rows = await conn.fetch("""
-                SELECT id, content FROM memories
-                WHERE embedding IS NULL AND content IS NOT NULL
-                ORDER BY id
-                LIMIT $1
-            """, batch_size)
-        else:
-            rows = await conn.fetch("""
-                SELECT id, content FROM memories
-                WHERE embedding_json IS NULL AND content IS NOT NULL
-                ORDER BY id
-                LIMIT $1
-            """, batch_size)
+        rows = await conn.fetch(f"""
+            SELECT id, content FROM memories
+            WHERE {embedding_column} IS NULL AND content IS NOT NULL
+            ORDER BY id
+            LIMIT $1
+        """, batch_size)
 
     if not rows:
         print("✅ 所有记忆已有embedding，无需补算")
@@ -663,10 +634,9 @@ async def backfill_memory_embeddings(batch_size: int = 20):
 
     # 检查剩余
     async with pool.acquire() as conn:
-        if db_core.HAS_PGVECTOR:
-            remaining = await conn.fetchval("SELECT COUNT(*) FROM memories WHERE embedding IS NULL AND content IS NOT NULL")
-        else:
-            remaining = await conn.fetchval("SELECT COUNT(*) FROM memories WHERE embedding_json IS NULL AND content IS NOT NULL")
+        remaining = await conn.fetchval(
+            f"SELECT COUNT(*) FROM memories WHERE {embedding_column} IS NULL AND content IS NOT NULL"
+        )
 
     print(f"✅ 本批补算完成：{total_updated}/{len(rows)} 条成功" + (f"，剩余 {remaining} 条待处理" if remaining > 0 else ""))
     return total_updated

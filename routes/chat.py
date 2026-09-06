@@ -20,6 +20,28 @@ from db import memories as db_memories
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
+
+async def _mark_pending_seen(session_id, pending_fragment_ids, pending_memory_ids):
+    if pending_fragment_ids:
+        try:
+            await db_conversations.mark_fragments_seen(
+                session_id,
+                pending_fragment_ids,
+                shared.CONVERSATION_SEEN_TTL_HOURS,
+            )
+        except Exception as e:
+            print(f"⚠️ 对话召回 seen 写入失败，保留待下次重试: {e}")
+
+    if pending_memory_ids:
+        try:
+            await db_conversations.mark_memories_seen(
+                session_id,
+                pending_memory_ids,
+                shared.MEMORY_SEEN_TTL_HOURS,
+            )
+        except Exception as e:
+            print(f"⚠️ 记忆注入 seen 写入失败，保留待下次重试: {e}")
+
 # ============================================================
 # API 接口
 # ============================================================
@@ -231,7 +253,7 @@ async def _chat_completions_inner(request: Request):
         print(f"📦 分区模式: DB历史{len(db_msgs)}条 + 客户端消息{len(client_new_msgs)}条")
 
         partition_prompt = resolved_system_prompt
-        if shared.MEMORY_ENABLED and shared.MAX_MEMORIES_INJECT > 0:
+        if shared.memory_injection_enabled():
             partition_prompt = (resolved_system_prompt or "") + partition_engine.MEMORY_USAGE_GUIDE
         # 保留客户端自带的 system（工具说明等），拼接到网关 prompt 之后，
         # 与非分区路径的行为对齐（前端 system 稳定时不影响 BP1 缓存命中）
@@ -377,25 +399,11 @@ async def _chat_completions_inner(request: Request):
                 except (KeyError, IndexError):
                     pass
 
-                if pending_fragment_ids:
-                    try:
-                        await db_conversations.mark_fragments_seen(
-                            session_id,
-                            pending_fragment_ids,
-                            shared.CONVERSATION_SEEN_TTL_HOURS,
-                        )
-                    except Exception as e:
-                        print(f"⚠️ 对话召回 seen 写入失败，保留待下次重试: {e}")
-
-                if pending_memory_ids:
-                    try:
-                        await db_conversations.mark_memories_seen(
-                            session_id,
-                            pending_memory_ids,
-                            shared.MEMORY_SEEN_TTL_HOURS,
-                        )
-                    except Exception as e:
-                        print(f"⚠️ 记忆注入 seen 写入失败，保留待下次重试: {e}")
+                await _mark_pending_seen(
+                    session_id,
+                    pending_fragment_ids,
+                    pending_memory_ids,
+                )
 
                 if shared.conversation_persistence_enabled() and (user_message or tool_messages):
                     asyncio.create_task(
@@ -526,25 +534,12 @@ async def stream_and_capture(
     if assistant_tool_calls:
         print(f"🔧 Stream response 包含 {len(assistant_tool_calls)} 个工具调用")
 
-    if stream_succeeded and pending_fragment_ids:
-        try:
-            await db_conversations.mark_fragments_seen(
-                session_id,
-                pending_fragment_ids,
-                shared.CONVERSATION_SEEN_TTL_HOURS,
-            )
-        except Exception as e:
-            print(f"⚠️ 对话召回 seen 写入失败，保留待下次重试: {e}")
-
-    if stream_succeeded and pending_memory_ids:
-        try:
-            await db_conversations.mark_memories_seen(
-                session_id,
-                pending_memory_ids,
-                shared.MEMORY_SEEN_TTL_HOURS,
-            )
-        except Exception as e:
-            print(f"⚠️ 记忆注入 seen 写入失败，保留待下次重试: {e}")
+    if stream_succeeded:
+        await _mark_pending_seen(
+            session_id,
+            pending_fragment_ids,
+            pending_memory_ids,
+        )
 
     if stream_usage:
         pt = stream_usage.get("prompt_tokens", 0)
